@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="tr">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+  <title>AI Hand FX v2</title>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #050505; overflow: hidden; font-family: sans-serif; }
+    #container { position: relative; width: 100vw; height: 100dvh; transition: transform 0.05s; }
+    video {
+      position: absolute; top: 0; left: 0;
+      width: 100%; height: 100%;
+      object-fit: cover;
+      transform: scaleX(-1);
+      filter: brightness(0.85) contrast(1.1);
+    }
+    canvas {
+      position: absolute; top: 0; left: 0;
+      width: 100%; height: 100%;
+      pointer-events: none;
+    }
+    #hud {
+      position: absolute; top: 15px; left: 50%; transform: translateX(-50%);
+      display: flex; gap: 10px; z-index: 10;
+      background: rgba(0, 0, 0, 0.75); padding: 8px 16px;
+      border-radius: 25px; border: 1px solid rgba(255, 165, 0, 0.5);
+    }
+    .toggle-btn {
+      background: #ff9f43; color: #000; border: none;
+      padding: 6px 14px; border-radius: 15px; font-weight: bold; font-size: 13px; cursor: pointer;
+    }
+    .toggle-btn.off { background: #333; color: #999; }
+    #status {
+      position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.85); color: #ff9f43; padding: 8px 18px;
+      border-radius: 20px; font-size: 13px; font-weight: bold; z-index: 10;
+      border: 1px solid rgba(255, 159, 67, 0.5); white-space: nowrap;
+    }
+  </style>
+</head>
+<body>
+  <div id="container">
+    <div id="hud">
+      <button id="skel-btn" class="toggle-btn">İskelet: AÇIK</button>
+      <button id="clear-btn" class="toggle-btn" style="background:#ff4757;color:#fff;">Temizle</button>
+    </div>
+    <video id="video" autoplay playsinline muted></video>
+    <canvas id="drawCanvas"></canvas>
+    <canvas id="fxCanvas"></canvas>
+    <div id="status">Sistem başlatılıyor...</div>
+  </div>
+
+  <script>
+    const container = document.getElementById('container');
+    const video = document.getElementById('video');
+    const dCanvas = document.getElementById('drawCanvas');
+    const fxCanvas = document.getElementById('fxCanvas');
+    const dCtx = dCanvas.getContext('2d');
+    const fxCtx = fxCanvas.getContext('2d');
+    const statusText = document.getElementById('status');
+
+    let showSkeleton = true;
+    let prevX = null, prevY = null;
+    let particles = [];
+    let fireballs = [];
+    let fireCharge = 0;
+    let shieldAngle = 0;
+    let isProcessing = false;
+
+    const CONNECTIONS = [
+      [0,1],[1,2],[2,3],[3,4],
+      [0,5],[5,6],[6,7],[7,8],
+      [5,9],[9,10],[10,11],[11,12],
+      [9,13],[13,14],[14,15],[15,16],
+      [13,17],[0,17],[17,18],[18,19],[19,20]
+    ];
+
+    function resize() {
+      dCanvas.width = fxCanvas.width = window.innerWidth;
+      dCanvas.height = fxCanvas.height = window.innerHeight;
+    }
+    window.addEventListener('resize', resize);
+    resize();
+
+    document.getElementById('skel-btn').addEventListener('click', (e) => {
+      showSkeleton = !showSkeleton;
+      e.target.innerText = showSkeleton ? 'İskelet: AÇIK' : 'İskelet: KAPALI';
+      e.target.classList.toggle('off', !showSkeleton);
+    });
+
+    document.getElementById('clear-btn').addEventListener('click', () => {
+      dCtx.clearRect(0, 0, dCanvas.width, dCanvas.height);
+    });
+
+    function spawnFire(x, y, count = 6, spread = 35) {
+      for (let i = 0; i < count; i++) {
+        particles.push({
+          x: x + (Math.random() - 0.5) * spread,
+          y: y + (Math.random() - 0.5) * (spread * 0.6),
+          vx: (Math.random() - 0.5) * 3,
+          vy: -Math.random() * 6 - 2,
+          size: Math.random() * 18 + 8,
+          life: 1.0,
+          decay: Math.random() * 0.04 + 0.025,
+          type: 'fire'
+        });
+      }
+    }
+
+    function spawnSparks(x, y, count = 4, color = '0, 242, 255') {
+      for (let i = 0; i < count; i++) {
+        particles.push({
+          x, y,
+          vx: (Math.random() - 0.5) * 10,
+          vy: (Math.random() - 0.5) * 10,
+          size: Math.random() * 4 + 2,
+          life: 1.0,
+          decay: 0.06,
+          color,
+          type: 'spark'
+        });
+      }
+    }
+
+    function launchFireball(startX, startY) {
+      fireballs.push({
+        x: startX,
+        y: startY,
+        targetX: fxCanvas.width / 2,
+        targetY: fxCanvas.height / 2,
+        size: 35,
+        life: 1.0
+      });
+      container.style.transform = `translate(${(Math.random()-0.5)*16}px, ${(Math.random()-0.5)*16}px)`;
+      setTimeout(() => { container.style.transform = 'translate(0,0)'; }, 120);
+    }
+
+    function drawDoctorStrangeShield(cx, cy, radius, angle) {
+      fxCtx.save();
+      fxCtx.translate(cx, cy);
+      fxCtx.globalCompositeOperation = 'lighter';
+      fxCtx.strokeStyle = '#ff8c00';
+      fxCtx.shadowColor = '#ff4500';
+      fxCtx.shadowBlur = 15;
+
+      fxCtx.lineWidth = 3;
+      fxCtx.beginPath();
+      fxCtx.arc(0, 0, radius, 0, Math.PI * 2);
+      fxCtx.stroke();
+
+      fxCtx.lineWidth = 1.5;
+      fxCtx.beginPath();
+      fxCtx.arc(0, 0, radius * 0.9, 0, Math.PI * 2);
+      fxCtx.stroke();
+
+      for (let k = 0; k < 2; k++) {
+        fxCtx.save();
+        fxCtx.rotate(angle * (k === 0 ? 1 : -1) + (k * Math.PI / 4));
+        const sq = radius * 0.63;
+        fxCtx.strokeRect(-sq, -sq, sq * 2, sq * 2);
+        fxCtx.restore();
+      }
+
+      fxCtx.beginPath();
+      fxCtx.arc(0, 0, radius * 0.25, 0, Math.PI * 2);
+      fxCtx.strokeStyle = '#ffd700';
+      fxCtx.stroke();
+
+      fxCtx.restore();
+      const sparkAngle = Math.random() * Math.PI * 2;
+      spawnSparks(cx + Math.cos(sparkAngle) * radius, cy + Math.sin(sparkAngle) * radius, 2, '255, 165, 0');
+    }
+
+    function updateAndDrawEffects() {
+      fxCtx.globalCompositeOperation = 'lighter';
+      for (let i = particles.length - 1; i >= 0; i--) {
+        const p = particles[i];
+        p.x += p.vx;
+        p.y += p.vy;
+        p.life -= p.decay;
+        if (p.life <= 0) { particles.splice(i, 1); continue; }
+        fxCtx.beginPath();
+        if (p.type === 'fire') {
+          fxCtx.fillStyle = `rgba(255, ${Math.floor(p.life * 170)}, 20, ${p.life * 0.85})`;
+          fxCtx.arc(p.x, p.y, p.size * p.life, 0, Math.PI * 2);
+        } else {
+          fxCtx.fillStyle = `rgba(${p.color || '0, 242, 255'}, ${p.life})`;
+          fxCtx.arc(p.x, p.y, p.size, 0, Math.PI * 2);
+        }
+        fxCtx.fill();
+      }
+
+      for (let i = fireballs.length - 1; i >= 0; i--) {
+        const fb = fireballs[i];
+        fb.x += (fb.targetX - fb.x) * 0.12;
+        fb.y += (fb.targetY - fb.y) * 0.12;
+        fb.size += 14;
+        fb.life -= 0.045;
+        if (fb.life <= 0) {
+          spawnSparks(fb.x, fb.y, 25, '255, 120, 0');
+          fireballs.splice(i, 1);
+          continue;
+        }
+        const grad = fxCtx.createRadialGradient(fb.x, fb.y, fb.size * 0.1, fb.x, fb.y, fb.size);
+        grad.addColorStop(0, `rgba(255, 255, 200, ${fb.life})`);
+        grad.addColorStop(0.5, `rgba(255, 100, 0, ${fb.life * 0.9})`);
+        grad.addColorStop(1, 'rgba(255, 0, 0, 0)');
+        fxCtx.fillStyle = grad;
+        fxCtx.beginPath();
+        fxCtx.arc(fb.x, fb.y, fb.size, 0, Math.PI * 2);
+        fxCtx.fill();
+      }
+      fxCtx.globalCompositeOperation = 'source-over';
+    }
+
+    function drawSkeleton(lm) {
+      const w = fxCanvas.width;
+      const h = fxCanvas.height;
+      fxCtx.strokeStyle = 'rgba(0, 242, 255, 0.75)';
+      fxCtx.lineWidth = 2.5;
+      CONNECTIONS.forEach(([i, j]) => {
+        fxCtx.beginPath();
+        fxCtx.moveTo((1 - lm[i].x) * w, lm[i].y * h);
+        fxCtx.lineTo((1 - lm[j].x) * w, lm[j].y * h);
+        fxCtx.stroke();
+      });
+
+      lm.forEach((pt, idx) => {
+        const isTip = [4, 8, 12, 16, 20].includes(idx);
+        fxCtx.beginPath();
+        fxCtx.arc((1 - pt.x) * w, pt.y * h, isTip ? 5 : 3.5, 0, Math.PI * 2);
+        fxCtx.fillStyle = isTip ? '#ff4757' : '#ffffff';
+        fxCtx.fill();
+      });
+    }
+
+    function getHandState(lm) {
+      const indexUp = lm[8].y < lm[6].y;
+      const middleUp = lm[12].y < lm[10].y;
+      const ringUp = lm[16].y < lm[14].y;
+      const pinkyUp = lm[20].y < lm[18].y;
+      return {
+        indexUp, middleUp, ringUp, pinkyUp,
+        isOpen: indexUp && middleUp && ringUp && pinkyUp,
+        isFist: !indexUp && !middleUp && !ringUp && !pinkyUp,
+        isPointing: indexUp && !middleUp && !ringUp
+      };
+    }
+
+    function onResults(results) {
+      fxCtx.clearRect(0, 0, fxCanvas.width, fxCanvas.height);
+      const handsList = results.multiHandLandmarks || [];
+      const w = fxCanvas.width;
+      const h = fxCanvas.height;
+
+      if (handsList.length > 0 && showSkeleton) {
+        handsList.forEach(lm => drawSkeleton(lm));
+      }
+
+      if (handsList.length === 2) {
+        const h1 = getHandState(handsList[0]);
+        const h2 = getHandState(handsList[1]);
+        if (h1.isOpen && h2.isOpen) {
+          const p1x = (1 - handsList[0][9].x) * w, p1y = handsList[0][9].y * h;
+          const p2x = (1 - handsList[1][9].x) * w, p2y = handsList[1][9].y * h;
+          const centerX = (p1x + p2x) / 2;
+          const centerY = (p1y + p2y) / 2;
+          const dist = Math.hypot(p2x - p1x, p2y - p1y);
+          const radius = Math.max(60, Math.min(dist * 0.65, 240));
+          shieldAngle += 0.05;
+          drawDoctorStrangeShield(centerX, centerY, radius, shieldAngle);
+          statusText.innerText = "🌀 DOCTOR STRANGE KALKANI AKTİF";
+          prevX = null; prevY = null; fireCharge = 0;
+        } else {
+          statusText.innerText = "🌀 Kalkan için iki avucunu da aç";
+        }
+      } else if (handsList.length === 1) {
+        const lm = handsList[0];
+        const state = getHandState(lm);
+        const palmX = (1 - lm[9].x) * w;
+        const palmY = lm[9].y * h;
+        const tipX = (1 - lm[8].x) * w;
+        const tipY = lm[8].y * h;
+
+        if (state.isOpen) {
+          fireCharge = Math.min(fireCharge + 1, 20);
+          statusText.innerText = fireCharge >= 8 ? "🔥 ATEŞ TOPU HAZIR! (Yumruk yap)" : "🔥 Alev Toplanıyor...";
+          spawnFire(palmX, palmY, 9, 40);
+          prevX = null; prevY = null;
+        } else if (state.isFist) {
+          if (fireCharge >= 8) {
+            statusText.innerText = "💥 ATEŞ TOPU FIRLATILDI!";
+            launchFireball(palmX, palmY);
+            fireCharge = 0;
+          } else {
+            statusText.innerText = "✊ YUMRUK (Temizlendi)";
+            dCtx.clearRect(0, 0, dCanvas.width, dCanvas.height);
+            spawnSparks(palmX, palmY, 8);
+          }
+          prevX = null; prevY = null;
+        } else if (state.isPointing) {
+          fireCharge = 0;
+          statusText.innerText = "⚡ NEON ÇİZİM";
+          spawnSparks(tipX, tipY, 3);
+          if (prevX !== null && prevY !== null) {
+            dCtx.beginPath();
+            dCtx.moveTo(prevX, prevY);
+            dCtx.lineTo(tipX, tipY);
+            dCtx.strokeStyle = '#00f2ff';
+            dCtx.shadowColor = '#00f2ff';
+            dCtx.shadowBlur = 12;
+            dCtx.lineWidth = 5;
+            dCtx.lineCap = 'round';
+            dCtx.stroke();
+            dCtx.shadowBlur = 0;
+          }
+          prevX = tipX; prevY = tipY;
+        } else {
+          fireCharge = 0;
+          statusText.innerText = "✋ Bekleme Modu";
+          prevX = null; prevY = null;
+        }
+      } else {
+        fireCharge = 0;
+        statusText.innerText = "El algılanmadı (Elini göster)";
+        prevX = null; prevY = null;
+      }
+
+      updateAndDrawEffects();
+    }
+
+    const hands = new Hands({
+      locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/${file}`
+    });
+
+    hands.setOptions({
+      maxNumHands: 2,
+      modelComplexity: 0,
+      minDetectionConfidence: 0.5,
+      minTrackingConfidence: 0.5
+    });
+    hands.onResults(onResults);
+
+    async function startCamera() {
+      try {
+        statusText.innerText = "Kamera açılıyor...";
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 480 }, height: { ideal: 360 } },
+          audio: false
+        });
+        video.srcObject = stream;
+        await video.play();
+        statusText.innerText = "Yapay zeka indiriliyor (bekle)...";
+        requestAnimationFrame(processFrame);
+      } catch (err) {
+        statusText.innerText = "Kamera hatası: " + err.message;
+      }
+    }
+
+    async function processFrame() {
+      if (!isProcessing && video.readyState >= 2) {
+        isProcessing = true;
+        try {
+          await hands.send({ image: video });
+        } catch (e) {
+          statusText.innerText = "AI Hatası: " + e.message;
+        }
+        isProcessing = false;
+      }
+      requestAnimationFrame(processFrame);
+    }
+
+    startCamera();
+  </script>
+</body>
+</html>
