@@ -65,7 +65,6 @@
     let particles = [];
     let fireballs = [];
     let fireCharge = 0;
-    let fistHoldFrames = 0;
     let shieldAngle = 0;
     let isProcessing = false;
 
@@ -239,19 +238,25 @@
       });
     }
 
-    // Kalem tutuşu ve parmak açıları için geliştirilmiş algılama
+    // 3D bilek mesafesine göre açıdan bağımsız parmak kontrolü
+    function isFingerExtended(lm, tipIdx, pipIdx) {
+      const wrist = lm[0];
+      const tip = lm[tipIdx];
+      const pip = lm[pipIdx];
+      const tipDist = Math.hypot(tip.x - wrist.x, tip.y - wrist.y, (tip.z || 0) - (wrist.z || 0));
+      const pipDist = Math.hypot(pip.x - wrist.x, pip.y - wrist.y, (pip.z || 0) - (wrist.z || 0));
+      return tipDist > pipDist * 1.15;
+    }
+
     function getHandState(lm) {
-      const indexUp = lm[8].y < lm[6].y - 0.02;
-      const middleUp = lm[12].y < lm[10].y - 0.02;
-      const ringUp = lm[16].y < lm[14].y - 0.02;
-      const pinkyUp = lm[20].y < lm[18].y - 0.02;
+      const indexOpen = isFingerExtended(lm, 8, 6);
+      const middleOpen = isFingerExtended(lm, 12, 10);
+      const ringOpen = isFingerExtended(lm, 16, 14);
+      const pinkyOpen = isFingerExtended(lm, 20, 18);
 
-      // İşaret parmağı ucu, diğer parmak uçlarından belirgin şekilde yukarıdaysa çizim modudur
-      const indexHighest = lm[8].y < lm[12].y - 0.04 && lm[8].y < lm[16].y - 0.04;
-
-      const isOpen = indexUp && middleUp && ringUp && pinkyUp && !indexHighest;
-      const isFist = !indexUp && !middleUp && !ringUp && !pinkyUp;
-      const isPointing = indexUp && (indexHighest || (!middleUp && !ringUp));
+      const isOpen = indexOpen && middleOpen && ringOpen && pinkyOpen;
+      const isFist = !indexOpen && !middleOpen && !ringOpen && !pinkyOpen;
+      const isPointing = indexOpen && !middleOpen && !ringOpen;
 
       return { isOpen, isFist, isPointing };
     }
@@ -267,7 +272,6 @@
       }
 
       if (handsList.length === 2) {
-        fistHoldFrames = 0;
         const h1 = getHandState(handsList[0]);
         const h2 = getHandState(handsList[1]);
         if (h1.isOpen && h2.isOpen) {
@@ -293,11 +297,9 @@
         const rawTipY = lm[8].y * h;
 
         if (state.isPointing) {
-          fistHoldFrames = 0;
           fireCharge = 0;
           statusText.innerText = "⚡ NEON ÇİZİM";
 
-          // Titremeyi önlemek için yumuşatma (Smoothing)
           if (smoothX === null || smoothY === null) {
             smoothX = rawTipX;
             smoothY = rawTipY;
@@ -322,7 +324,6 @@
           spawnSparks(smoothX, smoothY, 2);
         }
         else if (state.isOpen) {
-          fistHoldFrames = 0;
           fireCharge = Math.min(fireCharge + 1, 20);
           statusText.innerText = fireCharge >= 8 ? "🔥 ATEŞ TOPU HAZIR! (Yumruk yap)" : "🔥 Alev Toplanıyor...";
           spawnFire(palmX, palmY, 9, 40);
@@ -334,28 +335,16 @@
             statusText.innerText = "💥 ATEŞ TOPU FIRLATILDI!";
             launchFireball(palmX, palmY);
             fireCharge = 0;
-            fistHoldFrames = 0;
           } else {
-            // Yanlışlıkla silmeyi önlemek için 25 kare (yaklaşık 1 saniye) yumruk tutma şartı
-            fistHoldFrames++;
-            const pct = Math.min(100, Math.round((fistHoldFrames / 25) * 100));
-            statusText.innerText = `✊ Silmek için yumruk tut: %${pct}`;
-            if (fistHoldFrames >= 25) {
-              dCtx.clearRect(0, 0, w, h);
-              spawnSparks(palmX, palmY, 15);
-              statusText.innerText = "✨ Ekran Temizlendi";
-              fistHoldFrames = 0;
-            }
+            statusText.innerText = "✊ Yumruk (Silmek için üstteki butonu kullan)";
           }
         }
         else {
-          fistHoldFrames = 0;
           fireCharge = 0;
           statusText.innerText = "✋ Bekleme Modu";
           smoothX = null; smoothY = null;
         }
       } else {
-        fistHoldFrames = 0;
         fireCharge = 0;
         statusText.innerText = "El algılanmadı";
         smoothX = null; smoothY = null;
@@ -370,7 +359,7 @@
 
     hands.setOptions({
       maxNumHands: 2,
-      modelComplexity: 1, // Daha isabetli eklem algılama için 1 (Full)
+      modelComplexity: 1,
       minDetectionConfidence: 0.65,
       minTrackingConfidence: 0.65
     });
