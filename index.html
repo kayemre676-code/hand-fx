@@ -3,18 +3,17 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
-  <title>AI Hand FX v2</title>
-  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+  <title>AI Hand FX Pro</title>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1646424915/hands.js" crossorigin="anonymous"></script>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
-    body { background: #050505; overflow: hidden; font-family: sans-serif; }
+    body { background: #050505; overflow: hidden; font-family: -apple-system, sans-serif; }
     #container { position: relative; width: 100vw; height: 100dvh; transition: transform 0.05s; }
     video {
       position: absolute; top: 0; left: 0;
       width: 100%; height: 100%;
       object-fit: cover;
       transform: scaleX(-1);
-      filter: none;
     }
     canvas {
       position: absolute; top: 0; left: 0;
@@ -33,8 +32,8 @@
     }
     .toggle-btn.off { background: #333; color: #999; }
     #status {
-      position: absolute; bottom: 20px; left: 50%; transform: translateX(-50%);
-      background: rgba(0, 0, 0, 0.85); color: #ff9f43; padding: 8px 18px;
+      position: absolute; bottom: 25px; left: 50%; transform: translateX(-50%);
+      background: rgba(0, 0, 0, 0.85); color: #ff9f43; padding: 9px 20px;
       border-radius: 20px; font-size: 13px; font-weight: bold; z-index: 10;
       border: 1px solid rgba(255, 159, 67, 0.5); white-space: nowrap;
     }
@@ -62,10 +61,11 @@
     const statusText = document.getElementById('status');
 
     let showSkeleton = true;
-    let prevX = null, prevY = null;
+    let smoothX = null, smoothY = null;
     let particles = [];
     let fireballs = [];
     let fireCharge = 0;
+    let fistHoldFrames = 0;
     let shieldAngle = 0;
     let isProcessing = false;
 
@@ -78,8 +78,11 @@
     ];
 
     function resize() {
-      dCanvas.width = fxCanvas.width = window.innerWidth;
-      dCanvas.height = fxCanvas.height = window.innerHeight;
+      const dpr = Math.min(window.devicePixelRatio || 1, 2);
+      dCanvas.width = fxCanvas.width = window.innerWidth * dpr;
+      dCanvas.height = fxCanvas.height = window.innerHeight * dpr;
+      dCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
+      fxCtx.setTransform(dpr, 0, 0, dpr, 0, 0);
     }
     window.addEventListener('resize', resize);
     resize();
@@ -91,7 +94,7 @@
     });
 
     document.getElementById('clear-btn').addEventListener('click', () => {
-      dCtx.clearRect(0, 0, dCanvas.width, dCanvas.height);
+      dCtx.clearRect(0, 0, window.innerWidth, window.innerHeight);
     });
 
     function spawnFire(x, y, count = 6, spread = 35) {
@@ -109,15 +112,15 @@
       }
     }
 
-    function spawnSparks(x, y, count = 4, color = '0, 242, 255') {
+    function spawnSparks(x, y, count = 3, color = '0, 242, 255') {
       for (let i = 0; i < count; i++) {
         particles.push({
           x, y,
-          vx: (Math.random() - 0.5) * 10,
-          vy: (Math.random() - 0.5) * 10,
-          size: Math.random() * 4 + 2,
+          vx: (Math.random() - 0.5) * 8,
+          vy: (Math.random() - 0.5) * 8,
+          size: Math.random() * 3.5 + 1.5,
           life: 1.0,
-          decay: 0.06,
+          decay: 0.07,
           color,
           type: 'spark'
         });
@@ -128,8 +131,8 @@
       fireballs.push({
         x: startX,
         y: startY,
-        targetX: fxCanvas.width / 2,
-        targetY: fxCanvas.height / 2,
+        targetX: window.innerWidth / 2,
+        targetY: window.innerHeight / 2,
         size: 35,
         life: 1.0
       });
@@ -216,10 +219,10 @@
     }
 
     function drawSkeleton(lm) {
-      const w = fxCanvas.width;
-      const h = fxCanvas.height;
-      fxCtx.strokeStyle = 'rgba(0, 242, 255, 0.75)';
-      fxCtx.lineWidth = 2.5;
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      fxCtx.strokeStyle = 'rgba(0, 242, 255, 0.55)';
+      fxCtx.lineWidth = 2;
       CONNECTIONS.forEach(([i, j]) => {
         fxCtx.beginPath();
         fxCtx.moveTo((1 - lm[i].x) * w, lm[i].y * h);
@@ -230,36 +233,41 @@
       lm.forEach((pt, idx) => {
         const isTip = [4, 8, 12, 16, 20].includes(idx);
         fxCtx.beginPath();
-        fxCtx.arc((1 - pt.x) * w, pt.y * h, isTip ? 5 : 3.5, 0, Math.PI * 2);
+        fxCtx.arc((1 - pt.x) * w, pt.y * h, isTip ? 4.5 : 3, 0, Math.PI * 2);
         fxCtx.fillStyle = isTip ? '#ff4757' : '#ffffff';
         fxCtx.fill();
       });
     }
 
+    // Kalem tutuşu ve parmak açıları için geliştirilmiş algılama
     function getHandState(lm) {
-      const indexUp = lm[8].y < lm[6].y;
-      const middleUp = lm[12].y < lm[10].y;
-      const ringUp = lm[16].y < lm[14].y;
-      const pinkyUp = lm[20].y < lm[18].y;
-      return {
-        indexUp, middleUp, ringUp, pinkyUp,
-        isOpen: indexUp && middleUp && ringUp && pinkyUp,
-        isFist: !indexUp && !middleUp && !ringUp && !pinkyUp,
-        isPointing: indexUp && !middleUp && !ringUp
-      };
+      const indexUp = lm[8].y < lm[6].y - 0.02;
+      const middleUp = lm[12].y < lm[10].y - 0.02;
+      const ringUp = lm[16].y < lm[14].y - 0.02;
+      const pinkyUp = lm[20].y < lm[18].y - 0.02;
+
+      // İşaret parmağı ucu, diğer parmak uçlarından belirgin şekilde yukarıdaysa çizim modudur
+      const indexHighest = lm[8].y < lm[12].y - 0.04 && lm[8].y < lm[16].y - 0.04;
+
+      const isOpen = indexUp && middleUp && ringUp && pinkyUp && !indexHighest;
+      const isFist = !indexUp && !middleUp && !ringUp && !pinkyUp;
+      const isPointing = indexUp && (indexHighest || (!middleUp && !ringUp));
+
+      return { isOpen, isFist, isPointing };
     }
 
     function onResults(results) {
-      fxCtx.clearRect(0, 0, fxCanvas.width, fxCanvas.height);
+      const w = window.innerWidth;
+      const h = window.innerHeight;
+      fxCtx.clearRect(0, 0, w, h);
       const handsList = results.multiHandLandmarks || [];
-      const w = fxCanvas.width;
-      const h = fxCanvas.height;
 
       if (handsList.length > 0 && showSkeleton) {
         handsList.forEach(lm => drawSkeleton(lm));
       }
 
       if (handsList.length === 2) {
+        fistHoldFrames = 0;
         const h1 = getHandState(handsList[0]);
         const h2 = getHandState(handsList[1]);
         if (h1.isOpen && h2.isOpen) {
@@ -271,61 +279,86 @@
           const radius = Math.max(60, Math.min(dist * 0.65, 240));
           shieldAngle += 0.05;
           drawDoctorStrangeShield(centerX, centerY, radius, shieldAngle);
-          statusText.innerText = "🌀 DOCTOR STRANGE KALKANI AKTİF";
-          prevX = null; prevY = null; fireCharge = 0;
+          statusText.innerText = "🌀 DOCTOR STRANGE KALKANI";
+          smoothX = null; smoothY = null; fireCharge = 0;
         } else {
-          statusText.innerText = "🌀 Kalkan için iki avucunu da aç";
+          statusText.innerText = "🌀 Kalkan için iki avucunu aç";
         }
       } else if (handsList.length === 1) {
         const lm = handsList[0];
         const state = getHandState(lm);
         const palmX = (1 - lm[9].x) * w;
         const palmY = lm[9].y * h;
-        const tipX = (1 - lm[8].x) * w;
-        const tipY = lm[8].y * h;
+        const rawTipX = (1 - lm[8].x) * w;
+        const rawTipY = lm[8].y * h;
 
-        if (state.isOpen) {
-          fireCharge = Math.min(fireCharge + 1, 20);
-          statusText.innerText = fireCharge >= 8 ? "🔥 ATEŞ TOPU HAZIR! (Yumruk yap)" : "🔥 Alev Toplanıyor...";
-          spawnFire(palmX, palmY, 9, 40);
-          prevX = null; prevY = null;
-        } else if (state.isFist) {
-          if (fireCharge >= 8) {
-            statusText.innerText = "💥 ATEŞ TOPU FIRLATILDI!";
-            launchFireball(palmX, palmY);
-            fireCharge = 0;
-          } else {
-            statusText.innerText = "✊ YUMRUK (Temizlendi)";
-            dCtx.clearRect(0, 0, dCanvas.width, dCanvas.height);
-            spawnSparks(palmX, palmY, 8);
-          }
-          prevX = null; prevY = null;
-        } else if (state.isPointing) {
+        if (state.isPointing) {
+          fistHoldFrames = 0;
           fireCharge = 0;
           statusText.innerText = "⚡ NEON ÇİZİM";
-          spawnSparks(tipX, tipY, 3);
-          if (prevX !== null && prevY !== null) {
+
+          // Titremeyi önlemek için yumuşatma (Smoothing)
+          if (smoothX === null || smoothY === null) {
+            smoothX = rawTipX;
+            smoothY = rawTipY;
+          } else {
+            const nextX = smoothX * 0.45 + rawTipX * 0.55;
+            const nextY = smoothY * 0.45 + rawTipY * 0.55;
+
             dCtx.beginPath();
-            dCtx.moveTo(prevX, prevY);
-            dCtx.lineTo(tipX, tipY);
+            dCtx.moveTo(smoothX, smoothY);
+            dCtx.lineTo(nextX, nextY);
             dCtx.strokeStyle = '#00f2ff';
             dCtx.shadowColor = '#00f2ff';
-            dCtx.shadowBlur = 12;
+            dCtx.shadowBlur = 10;
             dCtx.lineWidth = 5;
             dCtx.lineCap = 'round';
             dCtx.stroke();
             dCtx.shadowBlur = 0;
+
+            smoothX = nextX;
+            smoothY = nextY;
           }
-          prevX = tipX; prevY = tipY;
-        } else {
+          spawnSparks(smoothX, smoothY, 2);
+        }
+        else if (state.isOpen) {
+          fistHoldFrames = 0;
+          fireCharge = Math.min(fireCharge + 1, 20);
+          statusText.innerText = fireCharge >= 8 ? "🔥 ATEŞ TOPU HAZIR! (Yumruk yap)" : "🔥 Alev Toplanıyor...";
+          spawnFire(palmX, palmY, 9, 40);
+          smoothX = null; smoothY = null;
+        }
+        else if (state.isFist) {
+          smoothX = null; smoothY = null;
+          if (fireCharge >= 8) {
+            statusText.innerText = "💥 ATEŞ TOPU FIRLATILDI!";
+            launchFireball(palmX, palmY);
+            fireCharge = 0;
+            fistHoldFrames = 0;
+          } else {
+            // Yanlışlıkla silmeyi önlemek için 25 kare (yaklaşık 1 saniye) yumruk tutma şartı
+            fistHoldFrames++;
+            const pct = Math.min(100, Math.round((fistHoldFrames / 25) * 100));
+            statusText.innerText = `✊ Silmek için yumruk tut: %${pct}`;
+            if (fistHoldFrames >= 25) {
+              dCtx.clearRect(0, 0, w, h);
+              spawnSparks(palmX, palmY, 15);
+              statusText.innerText = "✨ Ekran Temizlendi";
+              fistHoldFrames = 0;
+            }
+          }
+        }
+        else {
+          fistHoldFrames = 0;
           fireCharge = 0;
           statusText.innerText = "✋ Bekleme Modu";
-          prevX = null; prevY = null;
+          smoothX = null; smoothY = null;
         }
       } else {
+        fistHoldFrames = 0;
         fireCharge = 0;
-        statusText.innerText = "El algılanmadı (Elini göster)";
-        prevX = null; prevY = null;
+        statusText.innerText = "El algılanmadı";
+        smoothX = null; smoothY = null;
       }
 
       updateAndDrawEffects();
@@ -337,22 +370,22 @@
 
     hands.setOptions({
       maxNumHands: 2,
-      modelComplexity: 0,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5
+      modelComplexity: 1, // Daha isabetli eklem algılama için 1 (Full)
+      minDetectionConfidence: 0.65,
+      minTrackingConfidence: 0.65
     });
     hands.onResults(onResults);
 
     async function startCamera() {
       try {
-        statusText.innerText = "Kamera açılıyor...";
+        statusText.innerText = "HD Kamera açılıyor...";
         const stream = await navigator.mediaDevices.getUserMedia({
           video: { facingMode: 'user', width: { ideal: 1920 }, height: { ideal: 1080 } },
           audio: false
         });
         video.srcObject = stream;
         await video.play();
-        statusText.innerText = "Yapay zeka indiriliyor (bekle)...";
+        statusText.innerText = "Model yükleniyor...";
         requestAnimationFrame(processFrame);
       } catch (err) {
         statusText.innerText = "Kamera hatası: " + err.message;
